@@ -1,0 +1,69 @@
+# ===== Unreal Engine =====
+# Build artifacts
+Binaries/
+Build/
+DerivedDataCache/
+Intermediate/
+Saved/
+
+# Visual Studio (Windows)
+.vs/
+*.VC.db
+*.opensdf
+*.sdf
+*.sln
+*.suo
+*.user
+
+# Xcode (macOS)
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+
+# Rider
+.idea/
+
+# VSCode
+.vscode/
+
+# ===== Compiled binaries =====
+*.dll
+*.exe
+*.app
+*.so
+*.dylib
+
+# Local config (user-specific)
+Config/Local*.ini
+Saved/Logs/*.log
+
+# ===== macOS =====
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# ===== Temp / backup =====
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+
+# ===== Editor scratch =====
+*.avi
+*.mov
+*.mp4
+*.png.bak
+
+# ===== Third-party =====
+ThirdParty/*/lib/
+ThirdParty/*/bin/
+
+# Keep these (don't ignore)
+!Source/
+!Content/
+!Config/
+!.gitignore
+!README.md
