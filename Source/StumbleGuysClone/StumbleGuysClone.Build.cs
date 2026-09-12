@@ -15,11 +15,22 @@ public class StumbleGuysClone : ModuleRules
 			"Engine",
 			"InputCore",
 			"EnhancedInput",
-			"PhysicsCore"
+			"PhysicsCore",
+			"NetCore",
+			"GameplayTags",
+			"GameplayTasks",
+			"NavigationSystem",
+			"AIModule"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
+			"Slate",
+			"SlateCore",
+			"UMG"
 		});
+
+		// Enable C++17/20 features
+		CppStandard = CppStandardVersion.Cpp20;
 	}
 }
