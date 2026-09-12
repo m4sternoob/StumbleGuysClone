@@ -11,6 +11,7 @@
 #include "InputAction.h"
 #include "InputMappingContext.h"
 #include "Net/UnrealNetwork.h"
+#include "GameFramework/Controller.h"
 
 AStumbleCharacter::AStumbleCharacter()
 {
@@ -24,9 +25,9 @@ AStumbleCharacter::AStumbleCharacter()
 	GetCapsuleComponent()->SetCollisionProfileName(TEXT("Pawn"));
 	GetCapsuleComponent()->SetCanEverAffectNavigation(false);
 
-	// Replication
+	// Replication - CharacterMovementComponent handles movement replication
 	bReplicates = true;
-	SetReplicateMovement(true); // CharacterMovementComponent handles movement replication
+	SetReplicateMovement(true);
 
 	// Head sphere (visual only, no collision)
 	HeadSphere = CreateDefaultSubobject<USphereComponent>(TEXT("HeadSphere"));
@@ -45,6 +46,11 @@ AStumbleCharacter::AStumbleCharacter()
 	GetCharacterMovement()->bUseControllerDesiredRotation = false;
 	GetCharacterMovement()->NavAgentProps.bCanCrouch = false;
 	GetCharacterMovement()->NavAgentProps.bCanJump = true;
+	GetCharacterMovement()->bCanWalkOffLedgesWhenCrouching = false;
+
+	// Network settings
+	NetUpdateFrequency = 60.0f;
+	MinNetUpdateFrequency = 30.0f;
 
 	// Camera boom (spring arm) — follows character, doesn't rotate with controller
 	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
@@ -58,15 +64,22 @@ AStumbleCharacter::AStumbleCharacter()
 	CameraBoom->ProbeSize = 12.0f;
 	CameraBoom->ProbeChannel = ECC_Camera;
 
+	// Enable camera lag for smooth following
+	CameraBoom->bEnableCameraLag = true;
+	CameraBoom->bEnableCameraRotationLag = true;
+	CameraBoom->CameraLagSpeed = CameraLagSpeed;
+	CameraBoom->CameraLagMaxDistance = CameraLagMaxDistance;
+
 	// Follow camera
 	FollowCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FollowCamera"));
 	FollowCamera->SetupAttachment(CameraBoom, USpringArmComponent::SocketName);
 	FollowCamera->bUsePawnControlRotation = false;
 	FollowCamera->FieldOfView = 90.0f;
 
-	// Net update frequency
-	NetUpdateFrequency = 60.0f;
-	MinNetUpdateFrequency = 30.0f;
+	// Default values for input assets
+	DefaultMappingContext = nullptr;
+	MoveAction = nullptr;
+	JumpAction = nullptr;
 }
 
 void AStumbleCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -74,6 +87,14 @@ void AStumbleCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME(AStumbleCharacter, PlayerColor);
+	DOREPLIFETIME(AStumbleCharacter, bIsEliminated);
+}
+
+void AStumbleCharacter::PreReplication(IRepChangedPropertyTracker& ChangedPropertyTracker)
+{
+	Super::PreReplication(ChangedPropertyTracker);
+	// Track position/velocity changes for bandwidth optimization
+	// CharacterMovementComponent handles most of this automatically
 }
 
 void AStumbleCharacter::BeginPlay()
@@ -117,7 +138,7 @@ void AStumbleCharacter::Move(const FInputActionValue& Value)
 {
 	const FVector2D MovementVector = Value.Get<FVector2D>();
 
-	if (Controller && !MovementVector.IsNearlyZero())
+	if (Controller && !MovementVector.IsNearlyZero() && !bIsEliminated)
 	{
 		// Camera-relative movement (uses follow camera yaw)
 		const FRotator CameraRotation = FollowCamera ? FollowCamera->GetComponentRotation() : GetControlRotation();
@@ -133,7 +154,10 @@ void AStumbleCharacter::Move(const FInputActionValue& Value)
 
 void AStumbleCharacter::OnJumpStarted()
 {
-	Jump();
+	if (!bIsEliminated)
+	{
+		Jump();
+	}
 }
 
 void AStumbleCharacter::OnJumpStopped()
@@ -146,6 +170,29 @@ void AStumbleCharacter::OnRep_PlayerColor()
 	ApplyPlayerColor();
 }
 
+void AStumbleCharacter::OnRep_Eliminated()
+{
+	if (bIsEliminated)
+	{
+		// Visual feedback on elimination
+		GetMesh()->SetVisibility(false);
+		GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		if (HeadSphere)
+		{
+			HeadSphere->SetVisibility(false);
+		}
+	}
+	else
+	{
+		GetMesh()->SetVisibility(true);
+		GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+		if (HeadSphere)
+		{
+			HeadSphere->SetVisibility(true);
+		}
+	}
+}
+
 void AStumbleCharacter::ApplyPlayerColor()
 {
 	if (HeadSphere)
@@ -154,6 +201,7 @@ void AStumbleCharacter::ApplyPlayerColor()
 		if (DynMat)
 		{
 			DynMat->SetVectorParameterValue(TEXT("EmissiveColor"), PlayerColor);
+			DynMat->SetScalarParameterValue(TEXT("EmissiveStrength"), 2.0f);
 		}
 	}
 	
@@ -165,5 +213,13 @@ void AStumbleCharacter::ApplyPlayerColor()
 		{
 			DynMat->SetVectorParameterValue(TEXT("BaseColor"), PlayerColor);
 		}
+	}
+}
+
+void AStumbleCharacter::SetEliminated(bool bEliminated)
+{
+	if (HasAuthority())
+	{
+		bIsEliminated = bEliminated;
 	}
 }

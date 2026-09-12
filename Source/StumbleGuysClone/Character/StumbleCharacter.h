@@ -14,7 +14,8 @@ class USphereComponent;
 
 /**
  * AStumbleCharacter — Replicated capsule character with sphere head.
- * Multiplayer-ready: server-authoritative movement, client prediction.
+ * Industry-standard: Server-authoritative movement with client prediction.
+ * Uses CharacterMovementComponent's built-in network prediction.
  */
 UCLASS()
 class STUMBLEGUYSCLONE_API AStumbleCharacter : public ACharacter
@@ -29,6 +30,7 @@ public:
 protected:
 	virtual void BeginPlay() override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
+	virtual void PreReplication(IRepChangedPropertyTracker& ChangedPropertyTracker) override;
 
 	// Input assets (set in Blueprint or defaults)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (AllowPrivateAccess = "true"))
@@ -50,7 +52,14 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UCameraComponent> FollowCamera;
 
-	// Movement tuning (replicated via CharacterMovementComponent)
+	// Camera smoothing (client-side only)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (AllowPrivateAccess = "true", ClampMin = "0.0", ClampMax = "1.0"))
+	float CameraLagSpeed = 10.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (AllowPrivateAccess = "true", ClampMin = "0.0"))
+	float CameraLagMaxDistance = 200.0f;
+
+	// Movement tuning
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movement", meta = (AllowPrivateAccess = "true", ClampMin = "0.0"))
 	float MaxWalkSpeed = 800.0f;
 
@@ -60,12 +69,26 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movement", meta = (AllowPrivateAccess = "true", ClampMin = "0.0", ClampMax = "1.0"))
 	float AirControl = 0.35f;
 
-	// Network
+	// Network optimization
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Network", meta = (AllowPrivateAccess = "true", ClampMin = "1.0"))
+	float NetUpdateFrequency = 60.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Network", meta = (AllowPrivateAccess = "true", ClampMin = "1.0"))
+	float MinNetUpdateFrequency = 30.0f;
+
+	// Visual - replicated
 	UPROPERTY(ReplicatedUsing = OnRep_PlayerColor)
 	FLinearColor PlayerColor = FLinearColor::White;
 
 	UFUNCTION()
 	void OnRep_PlayerColor();
+
+	// Elimination state
+	UPROPERTY(ReplicatedUsing = OnRep_Eliminated)
+	bool bIsEliminated = false;
+
+	UFUNCTION()
+	void OnRep_Eliminated();
 
 private:
 	void Move(const FInputActionValue& Value);
@@ -73,4 +96,8 @@ private:
 	void OnJumpStopped();
 
 	void ApplyPlayerColor();
+	void SetEliminated(bool bEliminated);
+
+	// Camera smoothing (client-side prediction correction)
+	void UpdateCameraLag(float DeltaTime);
 };
