@@ -100,4 +100,11 @@ private:
 
 	// Camera smoothing (client-side prediction correction)
 	void UpdateCameraLag(float DeltaTime);
+	void SmoothCameraRotation(float DeltaTime);
+	void UpdateCameraLagPosition(float DeltaTime);
+
+	// Camera state tracking for smoothing
+	FVector LastCameraLocation;
+	FRotator LastCameraRotation;
+	bool bCameraInitialized = false;
 };

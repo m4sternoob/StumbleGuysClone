@@ -223,3 +223,64 @@ void AStumbleCharacter::SetEliminated(bool bEliminated)
 		bIsEliminated = bEliminated;
 	}
 }
+
+void AStumbleCharacter::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
+	// Camera smoothing - only for locally controlled pawn
+	if (IsLocallyControlled() && FollowCamera && CameraBoom)
+	{
+		UpdateCameraLag(DeltaTime);
+	}
+}
+
+void AStumbleCharacter::UpdateCameraLag(float DeltaTime)
+{
+	SmoothCameraRotation(DeltaTime);
+	UpdateCameraLagPosition(DeltaTime);
+}
+
+void AStumbleCharacter::SmoothCameraRotation(float DeltaTime)
+{
+	if (!CameraBoom || !FollowCamera) return;
+
+	// Smooth camera rotation using interpolation
+	const float RotationLagSpeed = FMath::Clamp(CameraLagSpeed * 0.5f, 1.0f, 20.0f);
+	
+	FRotator TargetRotation = CameraBoom->GetTargetRotation();
+	FRotator CurrentRotation = CameraBoom->GetComponentRotation();
+	
+	FRotator SmoothedRotation = FMath::RInterpTo(CurrentRotation, TargetRotation, DeltaTime, RotationLagSpeed);
+	CameraBoom->SetWorldRotation(SmoothedRotation);
+}
+
+void AStumbleCharacter::UpdateCameraLagPosition(float DeltaTime)
+{
+	if (!CameraBoom || !FollowCamera) return;
+
+	if (!bCameraInitialized)
+	{
+		LastCameraLocation = CameraBoom->GetComponentLocation();
+		LastCameraRotation = CameraBoom->GetComponentRotation();
+		bCameraInitialized = true;
+		return;
+	}
+
+	// Smooth camera position with configurable lag
+	const float PositionLagSpeed = FMath::Clamp(CameraLagSpeed, 2.0f, 30.0f);
+	
+	FVector TargetLocation = CameraBoom->GetComponentLocation();
+	FVector SmoothedLocation = FMath::VInterpTo(LastCameraLocation, TargetLocation, DeltaTime, PositionLagSpeed);
+	
+	// Clamp max distance to prevent camera from lagging too far behind
+	FVector Delta = SmoothedLocation - LastCameraLocation;
+	float Distance = Delta.Size();
+	if (Distance > CameraLagMaxDistance)
+	{
+		Delta = Delta.GetSafeNormal() * CameraLagMaxDistance;
+		SmoothedLocation = LastCameraLocation + Delta;
+	}
+
+		LastCameraLocation = SmoothedLocation;
+	}
