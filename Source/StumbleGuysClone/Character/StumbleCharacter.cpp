@@ -12,6 +12,7 @@
 #include "InputMappingContext.h"
 #include "Net/UnrealNetwork.h"
 #include "GameFramework/Controller.h"
+#include "PhysicalMaterial.h"
 
 AStumbleCharacter::AStumbleCharacter()
 {
@@ -22,6 +23,16 @@ AStumbleCharacter::AStumbleCharacter()
 
 	// Capsule (body) — replicated by default in ACharacter
 	GetCapsuleComponent()->InitCapsuleSize(42.0f, 96.0f);
+	GetCapsuleComponent()->SetCollisionProfileName(TEXT("Pawn"));
+	GetCapsuleComponent()->SetCanEverAffectNavigation(false);
+
+	// Create and assign physics material for character (bouncy, low friction)
+	UPhysicalMaterial* CharacterPhysMat = CreateDefaultSubobject<UPhysicalMaterial>(TEXT("CharacterPhysMat"));
+	CharacterPhysMat->Friction = 0.1f;
+	CharacterPhysMat->Restitution = 0.6f;
+	CharacterPhysMat->RestitutionCombineMode = EPhysicalMaterialCombineMode::Average;
+	CharacterPhysMat->FrictionCombineMode = EPhysicalMaterialCombineMode::Min;
+	GetCapsuleComponent()->SetPhysMaterialOverride(CharacterPhysMat);
 	GetCapsuleComponent()->SetCollisionProfileName(TEXT("Pawn"));
 	GetCapsuleComponent()->SetCanEverAffectNavigation(false);
 

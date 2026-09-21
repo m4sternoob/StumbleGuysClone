@@ -8,6 +8,7 @@
 #include "Materials/Material.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Net/UnrealNetwork.h"
+#include "PhysicalMaterial.h"
 
 AStumbleObstacleBase::AStumbleObstacleBase()
 {
@@ -24,6 +25,14 @@ AStumbleObstacleBase::AStumbleObstacleBase()
 	ObstacleMesh->SetupAttachment(RootComponent);
 	ObstacleMesh->SetCollisionProfileName(TEXT("BlockAll"));
 	ObstacleMesh->SetMobility(EComponentMobility::Movable);
+
+	// Create and assign physics material for obstacles (high restitution for knockback)
+	UPhysicalMaterial* ObstaclePhysMat = CreateDefaultSubobject<UPhysicalMaterial>(TEXT("ObstaclePhysMat"));
+	ObstaclePhysMat->Friction = 0.2f;
+	ObstaclePhysMat->Restitution = 0.8f;
+	ObstaclePhysMat->RestitutionCombineMode = EPhysicalMaterialCombineMode::Max;
+	ObstaclePhysMat->FrictionCombineMode = EPhysicalMaterialCombineMode::Min;
+	ObstacleMesh->SetPhysMaterialOverride(ObstaclePhysMat);
 
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(TEXT("/Engine/BasicShapes/Cube.Cube"));
 	if (CubeMesh.Succeeded())

@@ -8,12 +8,30 @@
 #include "UObject/ConstructorHelpers.h"
 #include "Net/UnrealNetwork.h"
 #include "Character/StumbleCharacter.h"
+#include "PhysicalMaterial.h"
 
 AStumbleArena::AStumbleArena()
 {
 	PrimaryActorTick.bCanEverTick = false;
 	bReplicates = true;
 	SetReplicateMovement(false); // Static arena, no movement replication needed
+
+	// Root component
+	USceneComponent* Root = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
+	SetRootComponent(Root);
+
+	// Create physics materials
+	UPhysicalMaterial* FloorPhysMat = CreateDefaultSubobject<UPhysicalMaterial>(TEXT("FloorPhysMat"));
+	FloorPhysMat->Friction = 0.4f;
+	FloorPhysMat->Restitution = 0.1f;
+	FloorPhysMat->RestitutionCombineMode = EPhysicalMaterialCombineMode::Average;
+	FloorPhysMat->FrictionCombineMode = EPhysicalMaterialCombineMode::Average;
+
+	UPhysicalMaterial* WallPhysMat = CreateDefaultSubobject<UPhysicalMaterial>(TEXT("WallPhysMat"));
+	WallPhysMat->Friction = 0.3f;
+	WallPhysMat->Restitution = 0.3f;
+	WallPhysMat->RestitutionCombineMode = EPhysicalMaterialCombineMode::Average;
+	WallPhysMat->FrictionCombineMode = EPhysicalMaterialCombineMode::Average;
 
 	// Root component
 	USceneComponent* Root = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
@@ -47,6 +65,14 @@ void AStumbleArena::CreateFloor()
 	FloorMesh->SetRelativeLocation(FVector(0.0f, 0.0f, -50.0f));
 	FloorMesh->SetCollisionProfileName(TEXT("BlockAll"));
 	FloorMesh->SetMobility(EComponentMobility::Static);
+
+	// Create and assign physics material for floor
+	UPhysicalMaterial* FloorPhysMat = CreateDefaultSubobject<UPhysicalMaterial>(TEXT("FloorPhysMat"));
+	FloorPhysMat->Friction = 0.4f;
+	FloorPhysMat->Restitution = 0.1f;
+	FloorPhysMat->RestitutionCombineMode = EPhysicalMaterialCombineMode::Average;
+	FloorPhysMat->FrictionCombineMode = EPhysicalMaterialCombineMode::Average;
+	FloorMesh->SetPhysMaterialOverride(FloorPhysMat);
 
 	// Use engine default cube scaled to floor dimensions
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(TEXT("/Engine/BasicShapes/Cube.Cube"));
@@ -108,6 +134,14 @@ void AStumbleArena::CreateWalls()
 		WallMeshes[i]->SetWorldScale3D(Walls[i].Scale);
 		WallMeshes[i]->SetCollisionProfileName(TEXT("BlockAll"));
 		WallMeshes[i]->SetMobility(EComponentMobility::Static);
+
+		// Create and assign physics material for walls
+		UPhysicalMaterial* WallPhysMat = CreateDefaultSubobject<UPhysicalMaterial>(*FString::Printf(TEXT("WallPhysMat_%d"), i));
+		WallPhysMat->Friction = 0.3f;
+		WallPhysMat->Restitution = 0.3f;
+		WallPhysMat->RestitutionCombineMode = EPhysicalMaterialCombineMode::Average;
+		WallPhysMat->FrictionCombineMode = EPhysicalMaterialCombineMode::Average;
+		WallMeshes[i]->SetPhysMaterialOverride(WallPhysMat);
 
 		if (CubeMesh.Succeeded())
 		{
