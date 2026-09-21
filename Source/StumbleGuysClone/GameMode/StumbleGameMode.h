@@ -40,6 +40,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Arena")
 	AStumbleArena* GetArena() const { return Arena; }
 
+	// Obstacle spawning
+	UFUNCTION(BlueprintCallable, Category = "Obstacles")
+	void SpawnObstacles();
+
 	// Settings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Round", meta = (AllowPrivateAccess = "true", ClampMin = "10.0"))
 	float RoundDuration = 60.0f;
@@ -50,12 +54,21 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Arena", meta = (AllowPrivateAccess = "true"))
 	TSubclassOf<AStumbleArena> ArenaClass;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Obstacles", meta = (AllowPrivateAccess = "true"))
+	TSubclassOf<AStumbleObstacleMovingPlatform> MovingPlatformClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Obstacles", meta = (AllowPrivateAccess = "true"))
+	TSubclassOf<AStumbleObstacleSpinner> SpinnerClass;
+
 protected:
 	UPROPERTY()
 	TObjectPtr<AStumbleArena> Arena;
 
 	UPROPERTY(Replicated)
 	TObjectPtr<AStumbleGameState> StumbleGameState;
+
+	UPROPERTY()
+	TArray<TObjectPtr<AActor>> SpawnedObstacles;
 
 	FTimerHandle RoundTimerHandle;
 
@@ -67,4 +80,9 @@ protected:
 
 	void AssignPlayerColor(AStumbleCharacter* Character);
 	FLinearColor GetNextColor();
+
+	// Obstacle spawn positions
+	UPROPERTY()
+	TArray<FVector> ObstacleSpawnPoints;
+	void GenerateObstacleSpawnPoints();
 };
