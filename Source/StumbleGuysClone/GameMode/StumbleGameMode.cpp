@@ -5,6 +5,7 @@
 #include "Character/StumbleCharacter.h"
 #include "Arena/StumbleArena.h"
 #include "PlayerController/StumblePlayerController.h"
+#include "AI/StumbleBotController.h"
 #include "Obstacles/StumbleObstacleMovingPlatform.h"
 #include "Obstacles/StumbleObstacleSpinner.h"
 #include "UI/StumbleWinWidget.h"
@@ -195,8 +196,121 @@ void AStumbleGameMode::EndRound(AStumbleCharacter* Winner)
 		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("Round ended. Winner: %s"), Winner ? *Winner->GetName() : TEXT("None"));
-}
+		UE_LOG(LogTemp, Log, TEXT("Round ended. Winner: %s"), Winner ? *Winner->GetName() : TEXT("None"));
+	}
+
+	void AStumbleGameMode::SpawnBots(int32 Count)
+	{
+		if (!HasAuthority() || !GetWorld() || !BotControllerClass) return;
+
+		int32 CurrentPlayers = 0;
+		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		{
+			if (It->Get() && It->Get()->GetPawn())
+			{
+				CurrentPlayers++;
+			}
+		}
+
+		int32 BotsToSpawn = FMath::Min(Count, MaxBots - SpawnedBots.Num());
+		BotsToSpawn = FMath::Max(0, BotsToSpawn);
+
+		for (int32 i = 0; i < BotsToSpawn; ++i)
+		{
+			// Find spawn location
+			FVector SpawnLoc = FVector(0.0f, 0.0f, 150.0f);
+			if (ObstacleSpawnPoints.Num() > 0)
+			{
+				int32 Index = FMath::RandRange(0, ObstacleSpawnPoints.Num() - 1);
+				FVector SpawnPoint = ObstacleSpawnPoints[FMath::RandRange(0, ObstacleSpawnPoints.Num() - 1)];
+				SpawnPoint.Z = 150.0f;
+			}
+
+			FActorSpawnParameters SpawnParams;
+			SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+			// Spawn bot character first
+			if (CharacterClass)
+			{
+				FVector BotSpawnLoc = FVector(
+					FMath::RandRange(-1000.0f, 1000.0f),
+					FMath::RandRange(-1000.0f, 1000.0f),
+					150.0f
+				);
+
+				FActorSpawnParameters CharParams;
+				CharParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+				AStumbleCharacter* BotCharacter = GetWorld()->SpawnActor<AStumbleCharacter>(CharacterClass, FTransform(FRotator::ZeroRotator, FVector(
+					FMath::RandRange(-1000.0f, 1000.0f),
+					FMath::RandRange(-1000.0f, 1000.0f),
+					150.0f
+				)), CharParams);
+
+				if (BotCharacter)
+				{
+					// Spawn AI controller
+					AStumbleBotController* BotController = GetWorld()->SpawnActor<AStumbleBotController>(BotControllerClass);
+					if (BotController)
+					{
+						BotController->Possess(BotCharacter);
+						SpawnedBots.Add(BotController);
+
+						// Assign bot color
+						AssignPlayerColor(BotCharacter);
+					}
+				}
+			}
+		}
+	}
+
+	void AStumbleGameMode::RemoveBots(int32 Count)
+	{
+		if (!HasAuthority()) return;
+
+		int32 BotsToRemove = FMath::Min(Count, SpawnedBots.Num());
+		for (int32 i = 0; i < BotsToRemove; ++i)
+		{
+			if (SpawnedBots.Num() > 0)
+			{
+				AStumbleBotController* Bot = SpawnedBots.Pop();
+				if (Bot && Bot->GetPawn())
+				{
+					Bot->GetPawn()->Destroy();
+				}
+				if (Bot)
+				{
+					Bot->Destroy();
+				}
+			}
+		}
+	}
+
+	void AStumbleGameMode::UpdateBotCount()
+	{
+		if (!HasAuthority()) return;
+
+		int32 HumanPlayers = 0;
+		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		{
+			if (It->Get() && It->Get()->IsPlayerController())
+			{
+				HumanPlayers++;
+			}
+		}
+
+		int32 TargetBots = FMath::Max(0, MaxBots - HumanPlayers);
+		int32 CurrentBots = SpawnedBots.Num();
+
+		if (CurrentBots < TargetBots)
+		{
+			SpawnBots(TargetBots - CurrentBots);
+		}
+		else if (CurrentBots > TargetBots)
+		{
+			RemoveBots(CurrentBots - TargetBots);
+		}
+	}
 
 void AStumbleGameMode::RestartRound()
 {
@@ -354,5 +468,118 @@ void AStumbleGameMode::EndRound(AStumbleCharacter* Winner)
 	}
 
 	// TODO: Show win screen, handle restart
-	UE_LOG(LogTemp, Log, TEXT("Round ended. Winner: %s"), Winner ? *Winner->GetName() : TEXT("None"));
-}
+		UE_LOG(LogTemp, Log, TEXT("Round ended. Winner: %s"), Winner ? *Winner->GetName() : TEXT("None"));
+	}
+
+	void AStumbleGameMode::SpawnBots(int32 Count)
+	{
+		if (!HasAuthority() || !GetWorld() || !BotControllerClass) return;
+
+		int32 CurrentPlayers = 0;
+		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		{
+			if (It->Get() && It->Get()->GetPawn())
+			{
+				CurrentPlayers++;
+			}
+		}
+
+		int32 BotsToSpawn = FMath::Min(Count, MaxBots - SpawnedBots.Num());
+		BotsToSpawn = FMath::Max(0, BotsToSpawn);
+
+		for (int32 i = 0; i < BotsToSpawn; ++i)
+		{
+			// Find spawn location
+			FVector SpawnLoc = FVector(0.0f, 0.0f, 150.0f);
+			if (ObstacleSpawnPoints.Num() > 0)
+			{
+				int32 Index = FMath::RandRange(0, ObstacleSpawnPoints.Num() - 1);
+				FVector SpawnPoint = ObstacleSpawnPoints[FMath::RandRange(0, ObstacleSpawnPoints.Num() - 1)];
+				SpawnPoint.Z = 150.0f;
+			}
+
+			FActorSpawnParameters SpawnParams;
+			SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+			// Spawn bot character first
+			if (CharacterClass)
+			{
+				FVector BotSpawnLoc = FVector(
+					FMath::RandRange(-1000.0f, 1000.0f),
+					FMath::RandRange(-1000.0f, 1000.0f),
+					150.0f
+				);
+
+				FActorSpawnParameters CharParams;
+				CharParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+				AStumbleCharacter* BotCharacter = GetWorld()->SpawnActor<AStumbleCharacter>(CharacterClass, FTransform(FRotator::ZeroRotator, FVector(
+					FMath::RandRange(-1000.0f, 1000.0f),
+					FMath::RandRange(-1000.0f, 1000.0f),
+					150.0f
+				)), CharParams);
+
+				if (BotCharacter)
+				{
+					// Spawn AI controller
+					AStumbleBotController* BotController = GetWorld()->SpawnActor<AStumbleBotController>(BotControllerClass);
+					if (BotController)
+					{
+						BotController->Possess(BotCharacter);
+						SpawnedBots.Add(BotController);
+
+						// Assign bot color
+						AssignPlayerColor(BotCharacter);
+					}
+				}
+			}
+		}
+	}
+
+	void AStumbleGameMode::RemoveBots(int32 Count)
+	{
+		if (!HasAuthority()) return;
+
+		int32 BotsToRemove = FMath::Min(Count, SpawnedBots.Num());
+		for (int32 i = 0; i < BotsToRemove; ++i)
+		{
+			if (SpawnedBots.Num() > 0)
+			{
+				AStumbleBotController* Bot = SpawnedBots.Pop();
+				if (Bot && Bot->GetPawn())
+				{
+					Bot->GetPawn()->Destroy();
+				}
+				if (Bot)
+				{
+					Bot->Destroy();
+				}
+			}
+		}
+	}
+
+	void AStumbleGameMode::UpdateBotCount()
+	{
+		if (!HasAuthority()) return;
+
+		int32 HumanPlayers = 0;
+		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		{
+			if (It->Get() && It->Get()->IsPlayerController())
+			{
+				HumanPlayers++;
+			}
+		}
+
+		int32 TargetBots = FMath::Max(0, MaxBots - HumanPlayers);
+		int32 CurrentBots = SpawnedBots.Num();
+
+		if (CurrentBots < TargetBots)
+		{
+			SpawnBots(TargetBots - CurrentBots);
+		}
+		else if (CurrentBots > TargetBots)
+		{
+			RemoveBots(CurrentBots - TargetBots);
+		}
+	}

@@ -70,6 +70,9 @@ protected:
 	UPROPERTY()
 	TArray<TObjectPtr<AActor>> SpawnedObstacles;
 
+	UPROPERTY()
+	TArray<TObjectPtr<AStumbleBotController>> SpawnedBots;
+
 	FTimerHandle RoundTimerHandle;
 
 	// Player colors for multiplayer
@@ -78,6 +81,13 @@ protected:
 
 	int32 NextColorIndex = 0;
 
+	// Bot AI
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots", meta = (AllowPrivateAccess = "true"))
+	int32 MaxBots = 3;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bots", meta = (AllowPrivateAccess = "true"))
+	TSubclassOf<AStumbleBotController> BotControllerClass;
+
 	void AssignPlayerColor(AStumbleCharacter* Character);
 	FLinearColor GetNextColor();
 
@@ -85,4 +95,9 @@ protected:
 	UPROPERTY()
 	TArray<FVector> ObstacleSpawnPoints;
 	void GenerateObstacleSpawnPoints();
+
+	// Bot management
+	void SpawnBots(int32 Count);
+	void RemoveBots(int32 Count);
+	void UpdateBotCount();
 };
