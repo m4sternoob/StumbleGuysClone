@@ -90,6 +90,32 @@ protected:
 	UFUNCTION()
 	void OnRep_Eliminated();
 
+	// Respawn system
+	UPROPERTY(ReplicatedUsing = OnRep_RespawnState)
+	bool bIsRespawning = false;
+
+	UPROPERTY(Replicated)
+	float RespawnTimeRemaining = 0.0f;
+
+	UFUNCTION()
+	void OnRep_RespawnState();
+
+	// Invincibility frames
+	UPROPERTY(ReplicatedUsing = OnRep_Invincible)
+	bool bIsInvincible = false;
+
+	UPROPERTY(Replicated)
+	float InvincibilityTimeRemaining = 0.0f;
+
+	UFUNCTION()
+	void OnRep_Invincible();
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Respawn", meta = (AllowPrivateAccess = "true", ClampMin = "0.1"))
+	float RespawnDelay = 3.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Respawn", meta = (AllowPrivateAccess = "true", ClampMin = "0.1"))
+	float InvincibilityDuration = 2.0f;
+
 private:
 	void Move(const FInputActionValue& Value);
 	void OnJumpStarted();
@@ -97,6 +123,14 @@ private:
 
 	void ApplyPlayerColor();
 	void SetEliminated(bool bEliminated);
+
+	// Respawn system
+	void StartRespawn();
+	void UpdateRespawnTimer(float DeltaTime);
+	void FinishRespawn();
+	void SetInvincible(bool bInvincible);
+	void UpdateInvincibilityTimer(float DeltaTime);
+	void UpdateVisualInvincibility(float DeltaTime);
 
 	// Camera smoothing (client-side prediction correction)
 	void UpdateCameraLag(float DeltaTime);
@@ -107,4 +141,9 @@ private:
 	FVector LastCameraLocation;
 	FRotator LastCameraRotation;
 	bool bCameraInitialized = false;
+
+	// Invincibility visual
+	bool bInvincibilityVisible = true;
+	float InvincibilityBlinkTimer = 0.0f;
+	const float InvincibilityBlinkInterval = 0.1f;
 };

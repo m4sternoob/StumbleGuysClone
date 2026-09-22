@@ -153,38 +153,8 @@ void AStumbleGameMode::EliminatePlayer(AStumbleCharacter* Character)
 {
 	if (!HasAuthority() || !Character) return;
 
-	Character->SetActorEnableCollision(false);
-	Character->GetMesh()->SetVisibility(false);
-	Character->GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	
-	// Disable input
-	if (APlayerController* PC = Cast<APlayerController>(Character->GetController()))
-	{
-		PC->SetIgnoreMoveInput(true);
-		PC->SetIgnoreLookInput(true);
-	}
-
-	// Check remaining players
-	int32 AliveCount = 0;
-	AStumbleCharacter* LastAlive = nullptr;
-	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
-	{
-		APlayerController* PC = It->Get();
-		if (PC && PC->GetPawn())
-		{
-			AStumbleCharacter* C = Cast<AStumbleCharacter>(PC->GetPawn());
-			if (C && C->GetCapsuleComponent()->IsCollisionEnabled())
-			{
-				AliveCount++;
-				LastAlive = C;
-			}
-		}
-	}
-
-	if (AliveCount <= 1)
-	{
-		EndRound(LastAlive);
-	}
+	// Start respawn process instead of permanent elimination
+	Character->StartRespawn();
 }
 
 void AStumbleGameMode::SpawnObstacles()

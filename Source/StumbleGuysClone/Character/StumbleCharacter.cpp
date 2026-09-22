@@ -244,6 +244,13 @@ void AStumbleCharacter::Tick(float DeltaTime)
 	{
 		UpdateCameraLag(DeltaTime);
 	}
+
+	// Respawn timer
+	UpdateRespawnTimer(DeltaTime);
+
+	// Invincibility timer
+	UpdateInvincibilityTimer(DeltaTime);
+	UpdateVisualInvincibility(DeltaTime);
 }
 
 void AStumbleCharacter::UpdateCameraLag(float DeltaTime)
@@ -293,5 +300,157 @@ void AStumbleCharacter::UpdateCameraLagPosition(float DeltaTime)
 		SmoothedLocation = LastCameraLocation + Delta;
 	}
 
-		LastCameraLocation = SmoothedLocation;
-	}
+				LastCameraLocation = SmoothedLocation;
+			}
+
+		void AStumbleCharacter::OnRep_RespawnState()
+		{
+			if (bIsRespawning)
+			{
+				// Start respawn countdown visual
+			}
+			else
+			{
+				// Respawn finished
+			}
+		}
+
+		void AStumbleCharacter::OnRep_Invincible()
+		{
+			// Visual feedback handled in UpdateVisualInvincibility
+		}
+
+		void AStumbleCharacter::StartRespawn()
+		{
+			if (!HasAuthority()) return;
+
+			bIsRespawning = true;
+			bIsInvincible = true;
+			RespawnTimeRemaining = RespawnDelay;
+			InvincibilityTimeRemaining = InvincibilityDuration;
+
+			// Hide character during respawn
+			GetMesh()->SetVisibility(false);
+			GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			if (HeadSphere)
+			{
+				HeadSphere->SetVisibility(false);
+			}
+
+			// Disable input
+			if (APlayerController* PC = Cast<APlayerController>(GetController()))
+			{
+				PC->SetIgnoreMoveInput(true);
+				PC->SetIgnoreLookInput(true);
+			}
+		}
+
+		void AStumbleCharacter::UpdateRespawnTimer(float DeltaTime)
+		{
+			if (!bIsRespawning) return;
+
+			RespawnTimeRemaining -= DeltaTime;
+			InvincibilityTimeRemaining -= DeltaTime;
+
+			if (InvincibilityTimeRemaining <= 0.0f && bIsInvincible)
+			{
+				SetInvincible(false);
+			}
+
+			if (RespawnTimeRemaining <= 0.0f)
+			{
+				FinishRespawn();
+			}
+		}
+
+		void AStumbleCharacter::FinishRespawn()
+		{
+			if (!HasAuthority()) return;
+
+			bIsRespawning = false;
+
+			// Find spawn location
+			FVector SpawnLoc = FVector(0.0f, 0.0f, 150.0f);
+			if (AStumbleGameMode* GM = GetWorld()->GetAuthGameMode<AStumbleGameMode>())
+			{
+				if (GM->ObstacleSpawnPoints.Num() > 0)
+				{
+					// Pick a random spawn point
+					int32 Index = FMath::RandRange(0, GM->ObstacleSpawnPoints.Num() - 1);
+					FVector SpawnPoint = GM->ObstacleSpawnPoints[Index];
+					SpawnPoint.Z = 150.0f;
+					SetActorLocation(SpawnPoint);
+				}
+			}
+
+			// Show character
+			GetMesh()->SetVisibility(true);
+			GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+			if (HeadSphere)
+			{
+				HeadSphere->SetVisibility(true);
+			}
+
+			// Re-enable input
+			if (APlayerController* PC = Cast<APlayerController>(GetController()))
+			{
+				PC->SetIgnoreMoveInput(false);
+				PC->SetIgnoreLookInput(false);
+			}
+
+			// Start invincibility frames
+			SetInvincible(true);
+		}
+
+		void AStumbleCharacter::SetInvincible(bool bInvincible)
+		{
+			if (!HasAuthority()) return;
+
+			bIsInvincible = bInvincible;
+			InvincibilityTimeRemaining = bInvincible ? InvincibilityDuration : 0.0f;
+
+			if (bInvincible)
+			{
+				// Disable collision with obstacles but keep world collision
+				GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+				GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Ignore);
+			}
+			else
+			{
+				GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Pawn, ECR_Block);
+				GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
+			}
+		}
+
+		void AStumbleCharacter::UpdateInvincibilityTimer(float DeltaTime)
+		{
+			if (!bIsInvincible) return;
+
+			InvincibilityTimeRemaining -= DeltaTime;
+			if (InvincibilityTimeRemaining <= 0.0f)
+			{
+				SetInvincible(false);
+			}
+		}
+
+		void AStumbleCharacter::UpdateVisualInvincibility(float DeltaTime)
+		{
+			if (!bIsInvincible) return;
+
+			InvincibilityBlinkTimer += DeltaTime;
+			if (InvincibilityBlinkTimer >= InvincibilityBlinkInterval)
+			{
+				InvincibilityBlinkTimer = 0.0f;
+				bInvincibilityVisible = !bInvincibilityVisible;
+
+				if (GetMesh())
+				{
+					GetMesh()->SetVisibility(bInvincibilityVisible);
+				}
+				if (HeadSphere)
+				{
+					HeadSphere->SetVisibility(bInvincibilityVisible);
+				}
+			}
+		}
+		}
