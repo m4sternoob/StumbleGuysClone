@@ -7,6 +7,8 @@
 #include "PlayerController/StumblePlayerController.h"
 #include "Obstacles/StumbleObstacleMovingPlatform.h"
 #include "Obstacles/StumbleObstacleSpinner.h"
+#include "UI/StumbleWinWidget.h"
+#include "UI/StumbleHUDWidget.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerStart.h"
 #include "TimerManager.h"
@@ -21,6 +23,12 @@ AStumbleGameMode::AStumbleGameMode()
 
 	static ConstructorHelpers::FClassFinder<AStumbleArena> ArenaBP(TEXT("/Game/Blueprints/BP_StumbleArena"));
 	if (ArenaBP.Class) ArenaClass = ArenaBP.Class;
+
+	static ConstructorHelpers::FClassFinder<UStumbleWinWidget> WinWidgetBP(TEXT("/Game/Blueprints/BP_StumbleWinWidget"));
+	if (WinWidgetBP.Class) WinWidgetClass = WinWidgetBP.Class;
+
+	static ConstructorHelpers::FClassFinder<UStumbleHUDWidget> HUDWidgetBP(TEXT("/Game/Blueprints/BP_StumbleHUDWidget"));
+	if (HUDWidgetBP.Class) HUDWidgetClass = HUDWidgetBP.Class;
 
 	// Player colors for up to 4 players
 	PlayerColors = {
@@ -142,11 +150,88 @@ void AStumbleGameMode::EndRound(AStumbleCharacter* Winner)
 		if (Winner)
 		{
 			GS->SetWinner(Winner);
+			
+			// Award win to player state
+			if (APlayerController* PC = Cast<APlayerController>(Winner->GetController()))
+			{
+				if (AStumblePlayerState* PS = PC->GetPlayerState<AStumblePlayerState>())
+				{
+					PS->RecordWin();
+				}
+			}
 		}
 	}
 
-	// TODO: Show win screen, handle restart
+	// Show win screen for all players
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		APlayerController* PC = It->Get();
+		if (PC && WinWidgetClass)
+		{
+			UStumbleWinWidget* WinWidget = Cast<UStumbleWinWidget>(PC->GetHUD());
+			if (!WinWidget)
+			{
+				WinWidget = CreateWidget<UStumbleWinWidget>(PC, WinWidgetClass);
+				if (WinWidget)
+				{
+					WinWidget->AddToViewport();
+				}
+			}
+			
+			if (WinWidget)
+			{
+				bool bLocalWon = (Winner && Winner->GetController() == WinWidget->GetOwningPlayer());
+				WinWidget->SetWinnerInfo(
+					Winner ? Winner->GetName() : TEXT("None"),
+					bLocalWon,
+					bLocalWon ? 100 : 0 // Score placeholder
+				);
+				
+				WinWidget->SetOnPlayAgainClicked([this]()
+				{
+					RestartRound();
+				});
+			}
+		}
+	}
+
 	UE_LOG(LogTemp, Log, TEXT("Round ended. Winner: %s"), Winner ? *Winner->GetName() : TEXT("None"));
+}
+
+void AStumbleGameMode::RestartRound()
+{
+	if (!HasAuthority()) return;
+	
+	// Clean up obstacles
+	for (AActor* Obstacle : SpawnedObstacles)
+	{
+		if (Obstacle && !Obstacle->IsPendingKill())
+		{
+			Obstacle->Destroy();
+		}
+	}
+	SpawnedObstacles.Empty();
+	
+	// Respawn all players
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		APlayerController* PC = It->Get();
+		if (PC && PC->GetPawn())
+		{
+			AStumbleCharacter* Character = Cast<AStumbleCharacter>(PC->GetPawn());
+			if (Character && Character->bIsRespawning)
+			{
+				// Already respawning, will respawn normally
+			}
+			else if (Character && Character->bIsEliminated)
+			{
+				Character->StartRespawn();
+			}
+		}
+	}
+	
+	// Restart round timer
+	GetWorldTimerManager().SetTimer(RoundTimerHandle, this, &AStumbleGameMode::StartRound, 3.0f, false);
 }
 
 void AStumbleGameMode::EliminatePlayer(AStumbleCharacter* Character)
