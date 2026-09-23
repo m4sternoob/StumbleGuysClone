@@ -1,24 +1,44 @@
 // Copyright (c) 2026. Built for portfolio. Free to study.
 
 #include "GameMode/StumbleGameMode.h"
+
 #include "GameMode/StumbleGameState.h"
+#include "GameMode/StumblePlayerState.h"
 #include "Character/StumbleCharacter.h"
 #include "Arena/StumbleArena.h"
-#include "PlayerController/StumblePlayerController.h"
 #include "AI/StumbleBotController.h"
 #include "Obstacles/StumbleObstacleMovingPlatform.h"
 #include "Obstacles/StumbleObstacleSpinner.h"
+#include "Effects/StumbleSoundManager.h"
 #include "UI/StumbleWinWidget.h"
-#include "UI/StumbleHUDWidget.h"
+
 #include "Engine/World.h"
 #include "GameFramework/PlayerStart.h"
 #include "TimerManager.h"
-#include "Net/UnrealNetwork.h"
-#include "Math/UnrealMathUtility.h"
+#include "UObject/ConstructorHelpers.h"
+
+namespace
+{
+	/** Vertical offset so spawned pawns clear the arena floor. */
+	constexpr float GSpawnZ = 150.0f;
+
+	/** Obstacle layout is randomised per round. */
+	constexpr int32 GMinPlatformsPerRound = 3;
+	constexpr int32 GMaxPlatformsPerRound = 4;
+	constexpr int32 GMinSpinnersPerRound = 2;
+	constexpr int32 GMaxSpinnersPerRound = 3;
+
+	/** Number of outer spawn points, excluding the arena centre. */
+	constexpr int32 GOuterSpawnPoints = 6;
+
+	/** Keep spawn points this far inside the walls. */
+	constexpr float GSpawnMargin = 500.0f;
+}
 
 AStumbleGameMode::AStumbleGameMode()
 {
-	// Default classes (can be overridden in Blueprint)
+	// Blueprint subclasses are optional; the C++ classes are the fallback so the
+	// project is playable straight from a fresh clone with no content assets.
 	static ConstructorHelpers::FClassFinder<AStumbleCharacter> CharacterBP(TEXT("/Game/Blueprints/BP_StumbleCharacter"));
 	if (CharacterBP.Class) CharacterClass = CharacterBP.Class;
 
@@ -28,66 +48,70 @@ AStumbleGameMode::AStumbleGameMode()
 	static ConstructorHelpers::FClassFinder<UStumbleWinWidget> WinWidgetBP(TEXT("/Game/Blueprints/BP_StumbleWinWidget"));
 	if (WinWidgetBP.Class) WinWidgetClass = WinWidgetBP.Class;
 
-	static ConstructorHelpers::FClassFinder<UStumbleHUDWidget> HUDWidgetBP(TEXT("/Game/Blueprints/BP_StumbleHUDWidget"));
-	if (HUDWidgetBP.Class) HUDWidgetClass = HUDWidgetBP.Class;
-
-	// Player colors for up to 4 players
-	PlayerColors = {
-		FLinearColor(1.0f, 0.2f, 0.2f, 1.0f),  // Red
-		FLinearColor(0.2f, 0.4f, 1.0f, 1.0f),  // Blue
-		FLinearColor(0.2f, 1.0f, 0.3f, 1.0f),  // Green
-		FLinearColor(1.0f, 0.9f, 0.2f, 1.0f)   // Yellow
+	// Distinct, high-contrast colours so players can tell each other apart in a
+	// four-way scramble. Ordered to maximise separation between adjacent slots.
+	PlayerColors =
+	{
+		FLinearColor(1.00f, 0.20f, 0.20f, 1.0f), // Red
+		FLinearColor(0.20f, 0.45f, 1.00f, 1.0f), // Blue
+		FLinearColor(0.25f, 1.00f, 0.35f, 1.0f), // Green
+		FLinearColor(1.00f, 0.90f, 0.20f, 1.0f)  // Yellow
 	};
 
 	bReplicates = true;
+	GameStateClass = AStumbleGameState::StaticClass();
+	PlayerStateClass = AStumblePlayerState::StaticClass();
 }
 
 void AStumbleGameMode::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// Spawn arena
-	if (ArenaClass && HasAuthority())
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	// The arena must exist before spawn points can be derived from its size.
+	if (ArenaClass)
 	{
 		FActorSpawnParameters SpawnParams;
 		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 		Arena = GetWorld()->SpawnActor<AStumbleArena>(ArenaClass, FTransform::Identity, SpawnParams);
 	}
 
-	// Generate obstacle spawn points
 	GenerateObstacleSpawnPoints();
 
-	// Start round after a brief delay for clients to connect
-	GetWorldTimerManager().SetTimer(RoundTimerHandle, this, &AStumbleGameMode::StartRound, 3.0f, false);
+	// Fill empty slots with bots so a solo host still has opponents.
+	UpdateBotCount();
+
+	// Brief delay lets joining clients finish loading before the first round.
+	GetWorldTimerManager().SetTimer(
+		RoundTimerHandle, this, &AStumbleGameMode::StartRound, RoundRestartDelay, false);
 }
 
 void AStumbleGameMode::GenerateObstacleSpawnPoints()
 {
-	if (!Arena) return;
-
-	const float HalfSize = Arena->ArenaSize / 2.0f;
-	const float Margin = 500.0f; // Keep away from walls
-	const float SafeSize = HalfSize - Margin;
-
-	// Generate 6-8 spawn points around the arena
-	const int32 NumPoints = 7;
-	ObstacleSpawnPoints.Empty();
-	ObstacleSpawnPoints.Reserve(NumPoints);
-
-	// Center point
-	ObstacleSpawnPoints.Add(FVector(0.0f, 0.0f, 150.0f));
-
-	// Around the center in a circle
-	for (int32 i = 0; i < NumPoints - 1; ++i)
+	ObstacleSpawnPoints.Reset();
+	if (!Arena)
 	{
-		float Angle = (float)i / (NumPoints - 1) * 2.0f * PI;
-		float Radius = SafeSize * 0.6f;
-		FVector Point = FVector(
-			FMath::Cos(Angle) * Radius,
-			FMath::Sin(Angle) * Radius,
-			150.0f
-		);
-		ObstacleSpawnPoints.Add(Point);
+		return;
+	}
+
+	// One centre point plus a fan of points inside the walls. Reused for both
+	// obstacle placement and player respawns, so it must stay walkable.
+	const float SafeRadius = FMath::Max(Arena->ArenaSize * 0.5f - GSpawnMargin, 0.0f);
+
+	ObstacleSpawnPoints.Reserve(GOuterSpawnPoints + 1);
+	ObstacleSpawnPoints.Add(FVector(0.0f, 0.0f, GSpawnZ));
+
+	for (int32 i = 0; i < GOuterSpawnPoints; ++i)
+	{
+		const float Angle = (static_cast<float>(i) / GOuterSpawnPoints) * 2.0f * PI;
+		ObstacleSpawnPoints.Add(FVector(
+			FMath::Cos(Angle) * SafeRadius,
+			FMath::Sin(Angle) * SafeRadius,
+			GSpawnZ));
 	}
 }
 
@@ -95,28 +119,42 @@ void AStumbleGameMode::PostLogin(APlayerController* NewPlayer)
 {
 	Super::PostLogin(NewPlayer);
 
-	if (HasAuthority())
+	if (!HasAuthority() || !NewPlayer)
 	{
-		// Spawn character for new player
-		AStumbleCharacter* Character = SpawnPlayerForController(NewPlayer);
-		if (Character)
-		{
-			AssignPlayerColor(Character);
-		}
+		return;
 	}
+
+	// AGameModeBase would spawn a default pawn; we spawn our own so the colour
+	// assignment and audio config travel with it.
+	if (AStumbleCharacter* Character = SpawnPlayerForController(NewPlayer))
+	{
+		AssignPlayerColor(Character);
+	}
+
+	// A human took a slot, so retire one bot to keep the match size stable.
+	UpdateBotCount();
 }
 
 void AStumbleGameMode::Logout(AController* Exiting)
 {
 	Super::Logout(Exiting);
-	// Character destruction handled by engine
+
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	// A human freed a slot — backfill it with a bot.
+	UpdateBotCount();
 }
 
 void AStumbleGameMode::StartRound()
 {
-	if (!HasAuthority()) return;
+	if (!HasAuthority())
+	{
+		return;
+	}
 
-	// Spawn obstacles
 	SpawnObstacles();
 
 	if (AStumbleGameState* GS = GetGameState<AStumbleGameState>())
@@ -125,461 +163,399 @@ void AStumbleGameMode::StartRound()
 		GS->SetRoundEndTime(GetWorld()->GetTimeSeconds() + RoundDuration);
 	}
 
-	// Set timer for round end
-	GetWorldTimerManager().SetTimer(RoundTimerHandle, this, &AStumbleGameMode::EndRound, RoundDuration, false);
+	if (SoundSet)
+	{
+		SoundSet->PlayCueAtLocation(GetWorld(), SoundSet->RoundStartSound, FVector::ZeroVector);
+	}
+
+	GetWorldTimerManager().SetTimer(
+		RoundTimerHandle, this, &AStumbleGameMode::EndRound, RoundDuration, false);
 }
 
 void AStumbleGameMode::EndRound(AStumbleCharacter* Winner)
 {
-	if (!HasAuthority()) return;
+	if (!HasAuthority())
+	{
+		return;
+	}
 
 	GetWorldTimerManager().ClearTimer(RoundTimerHandle);
+	ClearObstacles();
 
-	// Clean up obstacles
-	for (AActor* Obstacle : SpawnedObstacles)
-	{
-		if (Obstacle && !Obstacle->IsPendingKill())
-		{
-			Obstacle->Destroy();
-		}
-	}
-	SpawnedObstacles.Empty();
-
-	if (AStumbleGameState* GS = GetGameState<AStumbleGameState>())
+	AStumbleGameState* GS = GetGameState<AStumbleGameState>();
+	if (GS)
 	{
 		GS->SetRoundState(EStumbleRoundState::Ended);
-		if (Winner)
+		GS->SetWinner(Winner);
+	}
+
+	// Credit the win before the widget reads the score back out.
+	if (Winner)
+	{
+		if (APlayerController* WinnerPC = Cast<APlayerController>(Winner->GetController()))
 		{
-			GS->SetWinner(Winner);
-			
-			// Award win to player state
-			if (APlayerController* PC = Cast<APlayerController>(Winner->GetController()))
+			if (AStumblePlayerState* WinnerPS = WinnerPC->GetPlayerState<AStumblePlayerState>())
 			{
-				if (AStumblePlayerState* PS = PC->GetPlayerState<AStumblePlayerState>())
-				{
-					PS->RecordWin();
-				}
+				WinnerPS->RecordWin();
 			}
 		}
 	}
 
-	// Show win screen for all players
-	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	// Show a personalised result screen to every connected player.
+	if (WinWidgetClass)
 	{
-		APlayerController* PC = It->Get();
-		if (PC && WinWidgetClass)
+		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 		{
-			UStumbleWinWidget* WinWidget = Cast<UStumbleWinWidget>(PC->GetHUD());
+			APlayerController* PC = It->Get();
+			if (!PC)
+			{
+				continue;
+			}
+
+			UStumbleWinWidget* WinWidget = CreateWidget<UStumbleWinWidget>(PC, WinWidgetClass);
 			if (!WinWidget)
 			{
-				WinWidget = CreateWidget<UStumbleWinWidget>(PC, WinWidgetClass);
-				if (WinWidget)
-				{
-					WinWidget->AddToViewport();
-				}
+				continue;
 			}
-			
-			if (WinWidget)
+
+			const bool bLocalWon = (Winner != nullptr && Winner->GetController() == PC);
+
+			int32 FinalScore = 0;
+			if (const AStumblePlayerState* PS = PC->GetPlayerState<AStumblePlayerState>())
 			{
-				bool bLocalWon = (Winner && Winner->GetController() == WinWidget->GetOwningPlayer());
-				WinWidget->SetWinnerInfo(
-					Winner ? Winner->GetName() : TEXT("None"),
-					bLocalWon,
-					bLocalWon ? 100 : 0 // Score placeholder
-				);
-				
-				WinWidget->SetOnPlayAgainClicked([this]()
+				FinalScore = PS->Score;
+			}
+
+			WinWidget->AddToViewport();
+			WinWidget->SetWinnerInfo(
+				Winner ? Winner->GetName() : TEXT("Nobody"),
+				bLocalWon,
+				FinalScore);
+
+			// Play Again is authoritative: the request goes back to the server
+			// rather than restarting anything locally.
+			WinWidget->SetOnPlayAgainClicked([this]()
+			{
+				if (HasAuthority())
 				{
 					RestartRound();
-				});
-			}
-		}
-	}
-
-		UE_LOG(LogTemp, Log, TEXT("Round ended. Winner: %s"), Winner ? *Winner->GetName() : TEXT("None"));
-	}
-
-	void AStumbleGameMode::SpawnBots(int32 Count)
-	{
-		if (!HasAuthority() || !GetWorld() || !BotControllerClass) return;
-
-		int32 CurrentPlayers = 0;
-		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
-		{
-			if (It->Get() && It->Get()->GetPawn())
-			{
-				CurrentPlayers++;
-			}
-		}
-
-		int32 BotsToSpawn = FMath::Min(Count, MaxBots - SpawnedBots.Num());
-		BotsToSpawn = FMath::Max(0, BotsToSpawn);
-
-		for (int32 i = 0; i < BotsToSpawn; ++i)
-		{
-			// Find spawn location
-			FVector SpawnLoc = FVector(0.0f, 0.0f, 150.0f);
-			if (ObstacleSpawnPoints.Num() > 0)
-			{
-				int32 Index = FMath::RandRange(0, ObstacleSpawnPoints.Num() - 1);
-				FVector SpawnPoint = ObstacleSpawnPoints[FMath::RandRange(0, ObstacleSpawnPoints.Num() - 1)];
-				SpawnPoint.Z = 150.0f;
-			}
-
-			FActorSpawnParameters SpawnParams;
-			SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
-			// Spawn bot character first
-			if (CharacterClass)
-			{
-				FVector BotSpawnLoc = FVector(
-					FMath::RandRange(-1000.0f, 1000.0f),
-					FMath::RandRange(-1000.0f, 1000.0f),
-					150.0f
-				);
-
-				FActorSpawnParameters CharParams;
-				CharParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
-				AStumbleCharacter* BotCharacter = GetWorld()->SpawnActor<AStumbleCharacter>(CharacterClass, FTransform(FRotator::ZeroRotator, FVector(
-					FMath::RandRange(-1000.0f, 1000.0f),
-					FMath::RandRange(-1000.0f, 1000.0f),
-					150.0f
-				)), CharParams);
-
-				if (BotCharacter)
-				{
-					// Spawn AI controller
-					AStumbleBotController* BotController = GetWorld()->SpawnActor<AStumbleBotController>(BotControllerClass);
-					if (BotController)
-					{
-						BotController->Possess(BotCharacter);
-						SpawnedBots.Add(BotController);
-
-						// Assign bot color
-						AssignPlayerColor(BotCharacter);
-					}
 				}
-			}
+			});
 		}
 	}
 
-	void AStumbleGameMode::RemoveBots(int32 Count)
+	if (SoundSet)
 	{
-		if (!HasAuthority()) return;
-
-		int32 BotsToRemove = FMath::Min(Count, SpawnedBots.Num());
-		for (int32 i = 0; i < BotsToRemove; ++i)
-		{
-			if (SpawnedBots.Num() > 0)
-			{
-				AStumbleBotController* Bot = SpawnedBots.Pop();
-				if (Bot && Bot->GetPawn())
-				{
-					Bot->GetPawn()->Destroy();
-				}
-				if (Bot)
-				{
-					Bot->Destroy();
-				}
-			}
-		}
+		SoundSet->PlayCueAtLocation(GetWorld(), SoundSet->RoundEndSound, FVector::ZeroVector);
 	}
 
-	void AStumbleGameMode::UpdateBotCount()
-	{
-		if (!HasAuthority()) return;
-
-		int32 HumanPlayers = 0;
-		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
-		{
-			if (It->Get() && It->Get()->IsPlayerController())
-			{
-				HumanPlayers++;
-			}
-		}
-
-		int32 TargetBots = FMath::Max(0, MaxBots - HumanPlayers);
-		int32 CurrentBots = SpawnedBots.Num();
-
-		if (CurrentBots < TargetBots)
-		{
-			SpawnBots(TargetBots - CurrentBots);
-		}
-		else if (CurrentBots > TargetBots)
-		{
-			RemoveBots(CurrentBots - TargetBots);
-		}
-	}
+	UE_LOG(LogTemp, Log, TEXT("Stumble round ended. Winner: %s"),
+		Winner ? *Winner->GetName() : TEXT("none"));
+}
 
 void AStumbleGameMode::RestartRound()
 {
-	if (!HasAuthority()) return;
-	
-	// Clean up obstacles
-	for (AActor* Obstacle : SpawnedObstacles)
+	if (!HasAuthority())
 	{
-		if (Obstacle && !Obstacle->IsPendingKill())
-		{
-			Obstacle->Destroy();
-		}
+		return;
 	}
-	SpawnedObstacles.Empty();
-	
-	// Respawn all players
+
+	ClearObstacles();
+
+	// Return every pawn to a clean spawn state. Characters own their own respawn
+	// state machine, so the director only has to nudge them.
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{
 		APlayerController* PC = It->Get();
-		if (PC && PC->GetPawn())
+		AStumbleCharacter* Character = PC ? Cast<AStumbleCharacter>(PC->GetPawn()) : nullptr;
+		if (Character && !Character->IsRespawning())
 		{
-			AStumbleCharacter* Character = Cast<AStumbleCharacter>(PC->GetPawn());
-			if (Character && Character->bIsRespawning)
-			{
-				// Already respawning, will respawn normally
-			}
-			else if (Character && Character->bIsEliminated)
-			{
-				Character->StartRespawn();
-			}
+			Character->StartRespawn();
 		}
 	}
-	
-	// Restart round timer
-	GetWorldTimerManager().SetTimer(RoundTimerHandle, this, &AStumbleGameMode::StartRound, 3.0f, false);
+
+	// Bots have no controller iterator entry of their own beyond their AIController,
+	// so reconcile the roster as well.
+	UpdateBotCount();
+
+	GetWorldTimerManager().SetTimer(
+		RoundTimerHandle, this, &AStumbleGameMode::StartRound, RoundRestartDelay, false);
 }
 
 void AStumbleGameMode::EliminatePlayer(AStumbleCharacter* Character)
 {
-	if (!HasAuthority() || !Character) return;
+	if (!HasAuthority() || !Character)
+	{
+		return;
+	}
 
-	// Start respawn process instead of permanent elimination
+	// Elimination is soft in this prototype: the character respawns after a
+	// delay rather than leaving the match.
 	Character->StartRespawn();
+}
+
+void AStumbleGameMode::ClearObstacles()
+{
+	for (AActor* Obstacle : SpawnedObstacles)
+	{
+		if (IsValid(Obstacle))
+		{
+			Obstacle->Destroy();
+		}
+	}
+	SpawnedObstacles.Reset();
+}
+
+AStumbleCharacter* AStumbleGameMode::SpawnPlayerForController(APlayerController* Controller)
+{
+	if (!HasAuthority() || !Controller || !CharacterClass)
+	{
+		return nullptr;
+	}
+
+	const AActor* StartSpot = FindPlayerStart(Controller);
+	const FTransform SpawnTransform = StartSpot
+		? StartSpot->GetActorTransform()
+		: FTransform(FRotator::ZeroRotator, FVector(0.0f, 0.0f, GSpawnZ));
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+	SpawnParams.Instigator = Controller;
+
+	AStumbleCharacter* Character = GetWorld()->SpawnActor<AStumbleCharacter>(
+		CharacterClass, SpawnTransform, SpawnParams);
+	if (!Character)
+	{
+		return nullptr;
+	}
+
+	Controller->Possess(Character);
+	ApplySoundSet(Character);
+	return Character;
 }
 
 void AStumbleGameMode::SpawnObstacles()
 {
-	if (!HasAuthority() || !GetWorld()) return;
-	if (!MovingPlatformClass || !SpinnerClass) return;
-
-	// Clear previous obstacles
-	for (AActor* Obstacle : SpawnedObstacles)
+	if (!HasAuthority())
 	{
-		if (Obstacle && !Obstacle->IsPendingKill())
-		{
-			Obstacle->Destroy();
-		}
-	}
-	SpawnedObstacles.Empty();
-
-	if (ObstacleSpawnPoints.Num() == 0) return;
-
-	// Shuffle spawn points
-	TArray<FVector> ShuffledPoints = ObstacleSpawnPoints;
-	for (int32 i = ShuffledPoints.Num() - 1; i > 0; --i)
-	{
-		int32 j = FMath::RandRange(0, i);
-		ShuffledPoints.Swap(i, j);
+		return;
 	}
 
-	FActorSpawnParameters SpawnParams;
-	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	ClearObstacles();
 
-	// Spawn moving platforms (3-4)
-	int32 NumPlatforms = FMath::RandRange(3, 4);
-	for (int32 i = 0; i < NumPlatforms && i < ShuffledPoints.Num(); ++i)
+	if (ObstacleSpawnPoints.Num() == 0 || (!MovingPlatformClass && !SpinnerClass))
 	{
-		if (MovingPlatformClass)
-		{
-			FVector SpawnLoc = ShuffledPoints[i];
-			SpawnLoc.Z = 150.0f;
-
-			FActorSpawnParameters Params;
-			Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
-			AStumbleObstacleMovingPlatform* Platform = GetWorld()->SpawnActor<AStumbleObstacleMovingPlatform>(MovingPlatformClass, FTransform(FRotator::ZeroRotator, SpawnLoc), Params);
-			if (Platform)
-			{
-				// Randomize platform properties
-				Platform->MoveAxis = FVector(FMath::RandBool() ? 1.0f : 0.0f, FMath::RandBool() ? 1.0f : 0.0f, 0.0f);
-				if (Platform->MoveAxis.IsNearlyZero())
-				{
-					Platform->MoveAxis = FVector(1.0f, 0.0f, 0.0f);
-				}
-				Platform->MoveDistance = FMath::RandRange(800.0f, 1500.0f);
-				Platform->MoveSpeed = FMath::RandRange(300.0f, 500.0f);
-				Platform->bPingPong = true;
-
-				SpawnedObstacles.Add(Platform);
-			}
-		}
+		return;
 	}
 
-	// Spawn spinners (2-3)
-	int32 NumSpinners = FMath::RandRange(2, 3);
-	int32 SpinnerStartIdx = FMath::Min(NumPlatforms, ShuffledPoints.Num() - 1);
-	for (int32 i = 0; i < NumSpinners && (SpinnerStartIdx + i) < ShuffledPoints.Num(); ++i)
+	// Shuffle so consecutive rounds do not read as the same layout.
+	TArray<FVector> Points = ObstacleSpawnPoints;
+	for (int32 i = Points.Num() - 1; i > 0; --i)
 	{
-		if (SpinnerClass)
+		Points.Swap(i, FMath::RandRange(0, i));
+	}
+
+	const int32 NumPlatforms = MovingPlatformClass
+		? FMath::RandRange(GMinPlatformsPerRound, GMaxPlatformsPerRound) : 0;
+	const int32 NumSpinners = SpinnerClass
+		? FMath::RandRange(GMinSpinnersPerRound, GMaxSpinnersPerRound) : 0;
+	const int32 Budget = FMath::Min(Points.Num(), NumPlatforms + NumSpinners);
+
+	int32 NextPoint = 0;
+
+	for (int32 i = 0; i < NumPlatforms && NextPoint < Budget; ++i, ++NextPoint)
+	{
+		FActorSpawnParameters Params;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		AStumbleObstacleMovingPlatform* Platform =
+			GetWorld()->SpawnActor<AStumbleObstacleMovingPlatform>(
+				MovingPlatformClass, FTransform(FRotator::ZeroRotator, Points[NextPoint]), Params);
+		if (!Platform)
 		{
-			FVector SpawnLoc = ShuffledPoints[SpinnerStartIdx + i];
-			SpawnLoc.Z = 150.0f;
-
-			FActorSpawnParameters Params;
-			Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
-			AStumbleObstacleSpinner* Spinner = GetWorld()->SpawnActor<AStumbleObstacleSpinner>(SpinnerClass, FTransform(FRotator::ZeroRotator, SpawnLoc), Params);
-			if (Spinner)
-			{
-				// Randomize spinner properties
-				Spinner->RotationSpeed = FMath::RandRange(60.0f, 150.0f);
-				Spinner->bReverseDirection = FMath::RandBool();
-				Spinner->BarLength = FMath::RandRange(800.0f, 1400.0f);
-				Spinner->BarThickness = FMath::RandRange(60.0f, 100.0f);
-
-				SpawnedObstacles.Add(Spinner);
-			}
+			continue;
 		}
+
+		// Randomise the motion so each round feels different. A pure-diagonal
+		// axis is allowed but never a zero vector.
+		FVector Axis(FMath::RandBool() ? 1.0f : 0.0f, FMath::RandBool() ? 1.0f : 0.0f, 0.0f);
+		if (Axis.IsNearlyZero())
+		{
+			Axis = FVector(1.0f, 0.0f, 0.0f);
+		}
+		Platform->MoveAxis = Axis;
+		Platform->MoveDistance = FMath::RandRange(800.0f, 1500.0f);
+		Platform->MoveSpeed = FMath::RandRange(300.0f, 500.0f);
+		Platform->bPingPong = true;
+
+		SpawnedObstacles.Add(Platform);
+	}
+
+	for (int32 i = 0; i < NumSpinners && NextPoint < Budget; ++i, ++NextPoint)
+	{
+		FActorSpawnParameters Params;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		AStumbleObstacleSpinner* Spinner = GetWorld()->SpawnActor<AStumbleObstacleSpinner>(
+			SpinnerClass, FTransform(FRotator::ZeroRotator, Points[NextPoint]), Params);
+		if (!Spinner)
+		{
+			continue;
+		}
+
+		Spinner->RotationSpeed = FMath::RandRange(60.0f, 150.0f);
+		Spinner->bReverseDirection = FMath::RandBool();
+		Spinner->BarLength = FMath::RandRange(800.0f, 1400.0f);
+		Spinner->BarThickness = FMath::RandRange(60.0f, 100.0f);
+
+		SpawnedObstacles.Add(Spinner);
 	}
 }
 
-void AStumbleGameMode::EndRound(AStumbleCharacter* Winner)
+void AStumbleGameMode::SpawnBots(int32 Count)
 {
-	if (!HasAuthority()) return;
-
-	GetWorldTimerManager().ClearTimer(RoundTimerHandle);
-
-	// Clean up obstacles
-	for (AActor* Obstacle : SpawnedObstacles)
+	if (!HasAuthority() || !BotControllerClass || !CharacterClass || Count <= 0)
 	{
-		if (Obstacle && !Obstacle->IsPendingKill())
-		{
-			Obstacle->Destroy();
-		}
+		return;
 	}
-	SpawnedObstacles.Empty();
 
-	if (AStumbleGameState* GS = GetGameState<AStumbleGameState>())
+	const int32 BotsToSpawn = FMath::Clamp(Count, 0, MaxBots - SpawnedBots.Num());
+	if (BotsToSpawn <= 0)
 	{
-		GS->SetRoundState(EStumbleRoundState::Ended);
-		if (Winner)
-		{
-			GS->SetWinner(Winner);
-		}
+		return;
 	}
 
-	// TODO: Show win screen, handle restart
-		UE_LOG(LogTemp, Log, TEXT("Round ended. Winner: %s"), Winner ? *Winner->GetName() : TEXT("None"));
-	}
+	// Bots drop in at spawn points when available, otherwise anywhere in the
+	// arena interior — the AI will path itself back onto solid ground.
+	const float ScatterExtent = Arena ? Arena->ArenaSize * 0.4f : 1000.0f;
 
-	void AStumbleGameMode::SpawnBots(int32 Count)
+	for (int32 i = 0; i < BotsToSpawn; ++i)
 	{
-		if (!HasAuthority() || !GetWorld() || !BotControllerClass) return;
-
-		int32 CurrentPlayers = 0;
-		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		FVector SpawnLocation;
+		if (ObstacleSpawnPoints.Num() > 0)
 		{
-			if (It->Get() && It->Get()->GetPawn())
-			{
-				CurrentPlayers++;
-			}
+			SpawnLocation = ObstacleSpawnPoints[FMath::RandRange(0, ObstacleSpawnPoints.Num() - 1)];
+		}
+		else
+		{
+			SpawnLocation = FVector(
+				FMath::FRandRange(-ScatterExtent, ScatterExtent),
+				FMath::FRandRange(-ScatterExtent, ScatterExtent),
+				GSpawnZ);
 		}
 
-		int32 BotsToSpawn = FMath::Min(Count, MaxBots - SpawnedBots.Num());
-		BotsToSpawn = FMath::Max(0, BotsToSpawn);
+		FActorSpawnParameters CharParams;
+		CharParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
 
-		for (int32 i = 0; i < BotsToSpawn; ++i)
+		AStumbleCharacter* BotCharacter = GetWorld()->SpawnActor<AStumbleCharacter>(
+			CharacterClass, FTransform(FRotator::ZeroRotator, SpawnLocation), CharParams);
+		if (!BotCharacter)
 		{
-			// Find spawn location
-			FVector SpawnLoc = FVector(0.0f, 0.0f, 150.0f);
-			if (ObstacleSpawnPoints.Num() > 0)
-			{
-				int32 Index = FMath::RandRange(0, ObstacleSpawnPoints.Num() - 1);
-				FVector SpawnPoint = ObstacleSpawnPoints[FMath::RandRange(0, ObstacleSpawnPoints.Num() - 1)];
-				SpawnPoint.Z = 150.0f;
-			}
-
-			FActorSpawnParameters SpawnParams;
-			SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
-			// Spawn bot character first
-			if (CharacterClass)
-			{
-				FVector BotSpawnLoc = FVector(
-					FMath::RandRange(-1000.0f, 1000.0f),
-					FMath::RandRange(-1000.0f, 1000.0f),
-					150.0f
-				);
-
-				FActorSpawnParameters CharParams;
-				CharParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
-				AStumbleCharacter* BotCharacter = GetWorld()->SpawnActor<AStumbleCharacter>(CharacterClass, FTransform(FRotator::ZeroRotator, FVector(
-					FMath::RandRange(-1000.0f, 1000.0f),
-					FMath::RandRange(-1000.0f, 1000.0f),
-					150.0f
-				)), CharParams);
-
-				if (BotCharacter)
-				{
-					// Spawn AI controller
-					AStumbleBotController* BotController = GetWorld()->SpawnActor<AStumbleBotController>(BotControllerClass);
-					if (BotController)
-					{
-						BotController->Possess(BotCharacter);
-						SpawnedBots.Add(BotController);
-
-						// Assign bot color
-						AssignPlayerColor(BotCharacter);
-					}
-				}
-			}
+			continue;
 		}
+
+		FActorSpawnParameters AIParams;
+		AIParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		AStumbleBotController* BotController =
+			GetWorld()->SpawnActor<AStumbleBotController>(BotControllerClass, AIParams);
+		if (!BotController)
+		{
+			BotCharacter->Destroy();
+			continue;
+		}
+
+		BotController->Possess(BotCharacter);
+		SpawnedBots.Add(BotController);
+
+		AssignPlayerColor(BotCharacter);
+		ApplySoundSet(BotCharacter);
 	}
+}
 
-	void AStumbleGameMode::RemoveBots(int32 Count)
+void AStumbleGameMode::RemoveBots(int32 Count)
+{
+	if (!HasAuthority())
 	{
-		if (!HasAuthority()) return;
-
-		int32 BotsToRemove = FMath::Min(Count, SpawnedBots.Num());
-		for (int32 i = 0; i < BotsToRemove; ++i)
-		{
-			if (SpawnedBots.Num() > 0)
-			{
-				AStumbleBotController* Bot = SpawnedBots.Pop();
-				if (Bot && Bot->GetPawn())
-				{
-					Bot->GetPawn()->Destroy();
-				}
-				if (Bot)
-				{
-					Bot->Destroy();
-				}
-			}
-		}
+		return;
 	}
 
-	void AStumbleGameMode::UpdateBotCount()
+	const int32 BotsToRemove = FMath::Clamp(Count, 0, SpawnedBots.Num());
+	for (int32 i = 0; i < BotsToRemove; ++i)
 	{
-		if (!HasAuthority()) return;
-
-		int32 HumanPlayers = 0;
-		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		AStumbleBotController* Bot = SpawnedBots.Pop();
+		if (!IsValid(Bot))
 		{
-			if (It->Get() && It->Get()->IsPlayerController())
-			{
-				HumanPlayers++;
-			}
+			continue;
 		}
 
-		int32 TargetBots = FMath::Max(0, MaxBots - HumanPlayers);
-		int32 CurrentBots = SpawnedBots.Num();
-
-		if (CurrentBots < TargetBots)
+		if (APawn* BotPawn = Bot->GetPawn())
 		{
-			SpawnBots(TargetBots - CurrentBots);
+			BotPawn->Destroy();
 		}
-		else if (CurrentBots > TargetBots)
+		Bot->Destroy();
+	}
+}
+
+void AStumbleGameMode::UpdateBotCount()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	int32 HumanPlayers = 0;
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		if (It->Get() && It->Get()->IsPlayerController())
 		{
-			RemoveBots(CurrentBots - TargetBots);
+			++HumanPlayers;
 		}
 	}
+
+	const int32 TargetBots = FMath::Max(0, MaxBots - HumanPlayers);
+	const int32 CurrentBots = SpawnedBots.Num();
+
+	if (CurrentBots < TargetBots)
+	{
+		SpawnBots(TargetBots - CurrentBots);
+	}
+	else if (CurrentBots > TargetBots)
+	{
+		RemoveBots(CurrentBots - TargetBots);
+	}
+}
+
+void AStumbleGameMode::AssignPlayerColor(AStumbleCharacter* Character)
+{
+	if (!Character)
+	{
+		return;
+	}
+
+	// Written on the server; AStumbleCharacter replicates PlayerColor out to
+	// clients, which re-apply it via OnRep_PlayerColor.
+	Character->SetPlayerColor(GetNextColor());
+}
+
+FLinearColor AStumbleGameMode::GetNextColor()
+{
+	if (PlayerColors.Num() == 0)
+	{
+		return FLinearColor::White;
+	}
+
+	// Round-robin: colours are reused once all slots are taken, which is fine
+	// for a four-slot party game.
+	const FLinearColor Color = PlayerColors[NextColorIndex % PlayerColors.Num()];
+	++NextColorIndex;
+	return Color;
+}
+
+void AStumbleGameMode::ApplySoundSet(AStumbleCharacter* Character) const
+{
+	if (Character && SoundSet)
+	{
+		Character->SetSoundSet(SoundSet);
+	}
+}

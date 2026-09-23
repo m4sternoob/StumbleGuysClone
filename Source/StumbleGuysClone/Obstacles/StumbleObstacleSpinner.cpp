@@ -207,21 +207,63 @@ void AStumbleObstacleSpinner::PlayHitEffects(AStumbleCharacter* Character, const
 
 void AStumbleObstacleSpinner::ApplyObstacleEffect(AStumbleCharacter* Character, const FHitResult& HitResult)
 {
-	if (!Character) return;
+	if (!Character)
+	{
+		return;
+	}
 
-	// Apply enhanced impulse away from spinner
+	// Knock the player outward plus a tangential nudge, which reads as the bar
+	// sweeping them off rather than simply pushing them straight back.
 	FVector ImpulseDir = (Character->GetActorLocation() - GetActorLocation()).GetSafeNormal();
 	if (ImpulseDir.IsNearlyZero())
 	{
 		ImpulseDir = FVector::UpVector;
 	}
 
-	// Add tangential velocity for more dramatic effect
-	FVector TangentDir = FVector(-ImpulseDir.Y, ImpulseDir.X, 0.0f).GetSafeNormal();
-	FVector FinalImpulse = (ImpulseDir + TangentDir * 0.3f) * DamageImpulse * HitImpulseMultiplier;
+	const FVector TangentDir = FVector(-ImpulseDir.Y, ImpulseDir.X, 0.0f).GetSafeNormal();
+	const FVector FinalImpulse = (ImpulseDir + TangentDir * 0.3f) * DamageImpulse * HitImpulseMultiplier;
 
 	Character->GetCharacterMovement()->AddImpulse(FinalImpulse, true);
 
-	// Play hit effects
-	PlayHitEffects(Character, HitResult);
+	// Overlap events carry no hit location, so synthesise one for the effects.
+	FHitResult EffectHit = HitResult;
+	if (!EffectHit.bBlockingHit)
+	{
+		EffectHit.Location = Character->GetActorLocation();
+		EffectHit.Normal = -ImpulseDir;
+		EffectHit.bBlockingHit = true;
+	}
+
+	// Spinner-specific burst, then the character's shared hit feedback (which
+	// owns the camera shake and the audio cue).
+	PlayHitEffects(Character, EffectHit);
+	Character->PlayHitEffects(EffectHit);
+}
+
+void AStumbleObstacleSpinner::PlayHitEffects(AStumbleCharacter* Character, const FHitResult& HitResult)
+{
+	if (!Character || !GetWorld())
+	{
+		return;
+	}
+
+	// Rate-limit so a single sweep cannot spam effects across several frames.
+	const float CurrentTime = GetWorld()->GetTimeSeconds();
+	if (CurrentTime - LastHitTime < HitCooldown)
+	{
+		return;
+	}
+	LastHitTime = CurrentTime;
+
+	if (HitParticles)
+	{
+		UGameplayStatics::SpawnEmitterAtLocation(
+			GetWorld(), HitParticles, HitResult.Location, HitResult.Normal.Rotation(),
+			true, EPSCPoolMethod::AutoRelease);
+	}
+
+	if (HitSound)
+	{
+		UGameplayStatics::PlaySoundAtLocation(GetWorld(), HitSound, HitResult.Location);
+	}
 }

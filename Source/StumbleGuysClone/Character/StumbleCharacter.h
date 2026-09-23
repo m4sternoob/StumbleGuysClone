@@ -116,6 +116,30 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Respawn", meta = (AllowPrivateAccess = "true", ClampMin = "0.1"))
 	float InvincibilityDuration = 2.0f;
 
+	// Juice effects (public so obstacles/collectibles can trigger them)
+	UFUNCTION(BlueprintCallable, Category = "Juice")
+	void PlayHitEffects(const FHitResult& HitResult);
+
+	UFUNCTION(BlueprintCallable, Category = "Juice")
+	void PlayCollectibleSound();
+
+	/** Assign the shared audio configuration (called by the GameMode on spawn). */
+	UFUNCTION(BlueprintCallable, Category = "Juice")
+	void SetSoundSet(class UStumbleSoundManager* InSoundSet) { SoundSet = InSoundSet; }
+
+	/** Server-authoritative colour assignment, replicated to clients. */
+	UFUNCTION(BlueprintCallable, Category = "Character")
+	void SetPlayerColor(const FLinearColor& NewColor) { PlayerColor = NewColor; }
+
+	UFUNCTION(BlueprintPure, Category = "Character")
+	bool IsRespawning() const { return bIsRespawning; }
+
+	UFUNCTION(BlueprintPure, Category = "Character")
+	bool IsEliminated() const { return bIsEliminated; }
+
+	UFUNCTION(BlueprintPure, Category = "Character")
+	FLinearColor GetPlayerColor() const { return PlayerColor; }
+
 private:
 	void Move(const FInputActionValue& Value);
 	void OnJumpStarted();
@@ -132,6 +156,11 @@ private:
 	void UpdateInvincibilityTimer(float DeltaTime);
 	void UpdateVisualInvincibility(float DeltaTime);
 
+	// Juice effects (internal)
+	void PlayEliminationEffects();
+	void PlayJumpSound();
+	void PlayRespawnSound();
+
 	// Camera smoothing (client-side prediction correction)
 	void UpdateCameraLag(float DeltaTime);
 	void SmoothCameraRotation(float DeltaTime);
@@ -146,4 +175,23 @@ private:
 	bool bInvincibilityVisible = true;
 	float InvincibilityBlinkTimer = 0.0f;
 	const float InvincibilityBlinkInterval = 0.1f;
+
+	// Juice effect references
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Juice", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<class UParticleSystem> HitParticles;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Juice", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<class UParticleSystem> EliminationParticles;
+
+	/** Single audio configuration asset; every cue resolves through it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Juice", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<class UStumbleSoundManager> SoundSet;
+
+	/** Procedural camera shake, owned per-character and applied locally. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Juice", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<class UStumbleCameraShake> CameraShake;
+
+	/** Fire a camera shake at the given strength multiplier. */
+	UFUNCTION(BlueprintCallable, Category = "Juice")
+	void TriggerCameraShake(float Strength = 1.0f);
 };

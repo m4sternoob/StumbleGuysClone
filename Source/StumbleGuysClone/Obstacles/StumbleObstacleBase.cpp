@@ -99,6 +99,16 @@ void AStumbleObstacleBase::ApplyObstacleEffect(AStumbleCharacter* Character, con
 	}
 
 	Character->GetCharacterMovement()->AddImpulse(ImpulseDir * DamageImpulse, true);
+
+	// Juice: hit feedback at the character's position (overlap hits carry no hit location)
+	FHitResult EffectHit = HitResult;
+	if (!EffectHit.bBlockingHit)
+	{
+		EffectHit.Location = Character->GetActorLocation();
+		EffectHit.Normal = -ImpulseDir;
+		EffectHit.bBlockingHit = true;
+	}
+	Character->PlayHitEffects(EffectHit);
 }
 
 void AStumbleObstacleBase::ApplyVisualMaterial()

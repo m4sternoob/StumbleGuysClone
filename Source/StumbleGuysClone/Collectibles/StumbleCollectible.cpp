@@ -111,6 +111,9 @@ void AStumbleCollectible::Server_Collect_Implementation(AActor* Collector)
 		}
 	}
 
+	// Juice: pickup sound
+	Character->PlayCollectibleSound();
+
 	// Mark collected
 	bCollected = true;
 	CollectibleMesh->SetVisibility(false);

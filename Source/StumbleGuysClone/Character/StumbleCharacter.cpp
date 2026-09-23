@@ -12,6 +12,12 @@
 #include "InputMappingContext.h"
 #include "Net/UnrealNetwork.h"
 #include "GameFramework/Controller.h"
+#include "Kismet/GameplayStatics.h"
+#include "Particles/ParticleSystem.h"
+#include "Sound/SoundBase.h"
+#include "Effects/StumbleCameraShake.h"
+#include "Effects/StumbleSoundManager.h"
+#include "GameMode/StumbleGameMode.h"
 #include "PhysicalMaterial.h"
 
 AStumbleCharacter::AStumbleCharacter()
@@ -91,6 +97,9 @@ AStumbleCharacter::AStumbleCharacter()
 	DefaultMappingContext = nullptr;
 	MoveAction = nullptr;
 	JumpAction = nullptr;
+
+	// Juice: procedural camera shake profile (created in C++, tunable per-BP)
+	CameraShake = CreateDefaultSubobject<UStumbleCameraShake>(TEXT("CameraShake"));
 }
 
 void AStumbleCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -168,6 +177,7 @@ void AStumbleCharacter::OnJumpStarted()
 	if (!bIsEliminated)
 	{
 		Jump();
+		PlayJumpSound();
 	}
 }
 
@@ -243,6 +253,18 @@ void AStumbleCharacter::Tick(float DeltaTime)
 	if (IsLocallyControlled() && FollowCamera && CameraBoom)
 	{
 		UpdateCameraLag(DeltaTime);
+
+		// Juice: apply procedural shake as a transient offset on top of the
+		// smoothed camera. Purely local presentation, so it never replicates.
+		if (CameraShake && CameraShake->IsActive())
+		{
+			const FVector ShakeOffset = CameraShake->ComputeOffset(DeltaTime);
+			FollowCamera->SetRelativeLocation(ShakeOffset);
+		}
+		else if (FollowCamera)
+		{
+			FollowCamera->SetRelativeLocation(FVector::ZeroVector);
+		}
 	}
 
 	// Respawn timer
@@ -329,6 +351,9 @@ void AStumbleCharacter::UpdateCameraLagPosition(float DeltaTime)
 			RespawnTimeRemaining = RespawnDelay;
 			InvincibilityTimeRemaining = InvincibilityDuration;
 
+			// Juice: elimination burst
+			PlayEliminationEffects();
+
 			// Hide character during respawn
 			GetMesh()->SetVisibility(false);
 			GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -369,17 +394,14 @@ void AStumbleCharacter::UpdateCameraLagPosition(float DeltaTime)
 
 			bIsRespawning = false;
 
-			// Find spawn location
-			FVector SpawnLoc = FVector(0.0f, 0.0f, 150.0f);
-			if (AStumbleGameMode* GM = GetWorld()->GetAuthGameMode<AStumbleGameMode>())
+			// Return to a spawn point chosen by the round director, so respawns are
+			// consistent with where obstacles and other players start.
+			if (const AStumbleGameMode* GM = GetWorld()->GetAuthGameMode<AStumbleGameMode>())
 			{
-				if (GM->ObstacleSpawnPoints.Num() > 0)
+				const TArray<FVector>& SpawnPoints = GM->GetObstacleSpawnPoints();
+				if (SpawnPoints.Num() > 0)
 				{
-					// Pick a random spawn point
-					int32 Index = FMath::RandRange(0, GM->ObstacleSpawnPoints.Num() - 1);
-					FVector SpawnPoint = GM->ObstacleSpawnPoints[Index];
-					SpawnPoint.Z = 150.0f;
-					SetActorLocation(SpawnPoint);
+					SetActorLocation(SpawnPoints[FMath::RandRange(0, SpawnPoints.Num() - 1)]);
 				}
 			}
 
@@ -400,7 +422,10 @@ void AStumbleCharacter::UpdateCameraLagPosition(float DeltaTime)
 
 			// Start invincibility frames
 			SetInvincible(true);
-		}
+
+			// Juice: respawn sound
+			PlayRespawnSound();
+			}
 
 		void AStumbleCharacter::SetInvincible(bool bInvincible)
 		{
@@ -453,4 +478,69 @@ void AStumbleCharacter::UpdateCameraLagPosition(float DeltaTime)
 				}
 			}
 		}
-		}
+
+void AStumbleCharacter::TriggerCameraShake(float Strength)
+{
+	// Shake is a local presentation concern: never evaluated on dedicated
+	// servers and never replicated.
+	if (!CameraShake || !IsLocallyControlled()) return;
+
+	CameraShake->Trigger(Strength);
+}
+
+void AStumbleCharacter::PlayHitEffects(const FHitResult& HitResult)
+{
+	if (!GetWorld()) return;
+
+	// Hit particles at the impact point.
+	if (HitParticles && HitResult.bBlockingHit)
+	{
+		UGameplayStatics::SpawnEmitterAtLocation(
+			GetWorld(), HitParticles, HitResult.Location, HitResult.Normal.Rotation(),
+			true, EPSCPoolMethod::AutoRelease);
+	}
+
+	if (SoundSet)
+	{
+		SoundSet->PlayCueAtLocation(GetWorld(), SoundSet->HitSound, HitResult.Location);
+	}
+
+	TriggerCameraShake(1.0f);
+}
+
+void AStumbleCharacter::PlayEliminationEffects()
+{
+	if (!GetWorld()) return;
+
+	if (EliminationParticles)
+	{
+		UGameplayStatics::SpawnEmitterAtLocation(
+			GetWorld(), EliminationParticles, GetActorLocation(), FRotator::ZeroRotator,
+			true, EPSCPoolMethod::AutoRelease);
+	}
+
+	if (SoundSet)
+	{
+		SoundSet->PlayCueAtLocation(GetWorld(), SoundSet->EliminationSound, GetActorLocation());
+	}
+
+	TriggerCameraShake(1.5f);
+}
+
+void AStumbleCharacter::PlayJumpSound()
+{
+	if (!GetWorld() || !SoundSet) return;
+	SoundSet->PlayCueAtLocation(GetWorld(), SoundSet->JumpSound, GetActorLocation());
+}
+
+void AStumbleCharacter::PlayCollectibleSound()
+{
+	if (!GetWorld() || !SoundSet) return;
+	SoundSet->PlayCueAtLocation(GetWorld(), SoundSet->CollectibleSound, GetActorLocation());
+}
+
+void AStumbleCharacter::PlayRespawnSound()
+{
+	if (!GetWorld() || !SoundSet) return;
+	SoundSet->PlayCueAtLocation(GetWorld(), SoundSet->RespawnSound, GetActorLocation());
+}
